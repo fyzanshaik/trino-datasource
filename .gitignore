@@ -1,0 +1,12 @@
+.DS_Store
+
+# Local agent/editor state
+.claude/settings.local.json
+
+# Generated Trino basic-auth password database.
+trino/basic-auth/password.db
+
+# Runtime data is stored in Docker volumes, but keep common local spill paths out.
+data/
+tmp/
+*.log

@@ -1,0 +1,131 @@
+services:
+
+  # ── Trino (no-auth) — primary crawl target ─────────────────────────────────
+  trino:
+    image: trinodb/trino:448
+    container_name: trino
+    hostname: trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./trino/etc:/etc/trino
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hive-metastore:
+        condition: service_started
+      minio-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ── Trino (basic-auth on :8081) — auth testing only ────────────────────────
+  # Start with: docker compose --profile auth-test up -d trino-basic
+  trino-basic:
+    image: trinodb/trino:448
+    container_name: trino-basic
+    hostname: trino-basic
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./trino/basic-auth:/etc/trino
+      - ./trino/etc/catalog:/etc/trino/catalog
+    profiles:
+      - auth-test
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    hostname: postgres
+    environment:
+      POSTGRES_USER: trino
+      POSTGRES_PASSWORD: trino
+      POSTGRES_DB: trino
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trino"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO ───────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    hostname: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 minio minio123 &&
+      /usr/bin/mc mb local/hive    --ignore-existing &&
+      /usr/bin/mc mb local/iceberg --ignore-existing &&
+      echo 'buckets ready'
+      "
+
+  # ── Hive Metastore (Thrift, backed by PostgreSQL) ──────────────────────────
+  hive-metastore:
+    image: starburstdata/hive:3.1.2-e.18
+    container_name: hive-metastore
+    hostname: hive-metastore
+    ports:
+      - "9083:9083"
+    environment:
+      HIVE_METASTORE_DRIVER: org.postgresql.Driver
+      HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore
+      HIVE_METASTORE_USER: trino
+      HIVE_METASTORE_PASSWORD: trino
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio123
+      S3_PATH_STYLE_ACCESS: "true"
+      REGION: us-east-1
+      GOOGLE_CLOUD_KEY_FILE_PATH: /dev/null
+      AZURE_ADL_CLIENT_ID: dummy
+      AZURE_ADL_CREDENTIAL: dummy
+      AZURE_ADL_REFRESH_URL: dummy
+      AZURE_ABFS_STORAGE_ACCOUNT: dummy
+      AZURE_ABFS_ACCESS_KEY: dummy
+      AZURE_WASB_STORAGE_ACCOUNT: dummy
+      AZURE_ABFS_OAUTH: "false"
+      AZURE_ABFS_OAUTH_TOKEN_PROVIDER: dummy
+      AZURE_ABFS_OAUTH_CLIENT_ID: dummy
+      AZURE_ABFS_OAUTH_SECRET: dummy
+      AZURE_ABFS_OAUTH_ENDPOINT: dummy
+      AZURE_WASB_ACCESS_KEY: dummy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  minio-data:
