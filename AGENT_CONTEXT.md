@@ -6,25 +6,33 @@ This folder is a self-contained datasource fixture for testing Atlan Trino extra
 
 ## Architecture
 
-- `docker-compose.yml` starts Trino, PostgreSQL, MinIO, Hive Metastore, and an optional basic-auth Trino instance.
-- `sql/postgres/*.sql` is mounted into the PostgreSQL container and runs during database initialization.
-- `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates Hive objects, creates Iceberg objects, and generates `trino/basic-auth/password.db` when `htpasswd` is available.
+- `docker-compose.yml` starts Trino, PostgreSQL, MinIO, Hive Metastore, an optional basic-auth Trino instance, and an optional Cloudflare Tunnel container.
+- `sql/postgres/*.sql` is mounted into the PostgreSQL container and runs during database initialization. `00-metastore-db.sql` creates the `metastore` database required by Hive Metastore.
+- `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates Hive objects, creates Iceberg objects, and generates `trino/basic-auth/password.db` (bcrypt cost 10) when `htpasswd` is available. Credentials come from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` env vars with fallback defaults.
 - `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs.
-- `trino/basic-auth` defines the auth-enabled Trino profile for tenant-facing tests.
+- `trino/basic-auth` defines the auth-enabled Trino profile for tenant-facing tests. It sets `http-server.authentication.type=PASSWORD`, `http-server.process-forwarded=true` (so TLS-terminating tunnels count as HTTPS for auth), and an `internal-communication.shared-secret`.
+- The `postgres` service is started with `max_locks_per_transaction=512` so the 10 000-table bulk generation fits in a single transaction.
 
 ## Main Commands
 
 ```bash
 docker compose up -d
-./scripts/setup.sh
+TRINO_BASIC_USER=myuser TRINO_BASIC_PASSWORD='s3cret' ./scripts/setup.sh
 docker compose --profile auth-test up -d trino-basic
 docker compose --profile auth-test down
+```
+
+Expose via Cloudflare Tunnel (optional):
+
+```bash
+echo 'CLOUDFLARED_TOKEN=...' > .env   # gitignored
+docker compose --profile tunnel up -d cloudflared
 ```
 
 To wipe generated Docker volumes:
 
 ```bash
-docker compose --profile auth-test down -v
+docker compose --profile auth-test --profile tunnel down -v
 ```
 
 ## Test Data Shape
@@ -34,7 +42,7 @@ PostgreSQL includes:
 - Schemas such as `prod_sales`, `prod_marketing`, `dev_sales`, `staging`, quoted schema names, empty schemas, and internal-style schemas.
 - Tables with single-column primary keys, composite primary keys, foreign keys, composite foreign keys, no-key control tables, quoted/reserved columns, comments, wide column sets, and varying row counts.
 - Views and a materialized view for asset type and view SQL extraction paths.
-- Optional generated scale data: 20 `bulk_*` schemas, 10,000 tables, and about 510,000 columns.
+- Generated scale data: 20 `bulk_*` schemas, 10 000 tables, ~510 000 columns.
 
 Hive includes:
 
@@ -54,10 +62,12 @@ Expose only the basic-auth Trino endpoint (`trino-basic`, local port `8081`) whe
 - MinIO on `9000` or `9001`
 - Hive Metastore on `9083`
 
-If using a tunnel, configure the tenant connection with the tunnel hostname, port `443`, HTTPS, and Basic authentication.
+If using a tunnel, configure the tenant connection with the tunnel hostname, port `443`, HTTPS, and Basic authentication. The `cloudflared` compose service expects the tunnel token in `.env` as `CLOUDFLARED_TOKEN` and relies on the Cloudflare dashboard for hostname → `http://trino-basic:8080` routing.
 
 ## Security Notes
 
 This repository contains local fixture credentials in config files, such as `trino/trino` and MinIO test credentials. Treat them as local-only defaults. Change the Trino basic-auth username/password before exposing the service.
 
-The generated `trino/basic-auth/password.db` file is intentionally ignored and should not be committed.
+Basic-auth credentials for `trino-basic` are generated from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` at setup time; they are not baked into the repo. `password.db` uses bcrypt cost 10 because Trino rejects costs below 8.
+
+The generated `trino/basic-auth/password.db` file and local `.env` (holding `CLOUDFLARED_TOKEN`) are intentionally ignored and must not be committed.

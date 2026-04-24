@@ -1,5 +1,8 @@
 .DS_Store
 
+# Local environment (Cloudflare tunnel token, etc.) — never commit
+.env
+
 # Local agent/editor state
 .claude/settings.local.json
 

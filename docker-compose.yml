@@ -41,6 +41,7 @@ services:
     image: postgres:16
     container_name: postgres
     hostname: postgres
+    command: postgres -c max_locks_per_transaction=512
     environment:
       POSTGRES_USER: trino
       POSTGRES_PASSWORD: trino
@@ -89,6 +90,18 @@ services:
       /usr/bin/mc mb local/iceberg --ignore-existing &&
       echo 'buckets ready'
       "
+
+  # ── Cloudflare Tunnel — exposes trino-basic on your Cloudflare hostname ────
+  # Start with: docker compose --profile tunnel up -d cloudflared
+  # Requires CLOUDFLARED_TOKEN in .env (created via Cloudflare Zero Trust dashboard).
+  # In the dashboard, set the tunnel's Public Hostname service to: http://trino-basic:8080
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    profiles:
+      - tunnel
 
   # ── Hive Metastore (Thrift, backed by PostgreSQL) ──────────────────────────
   hive-metastore:

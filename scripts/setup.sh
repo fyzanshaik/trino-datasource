@@ -14,6 +14,11 @@ set -euo pipefail
 POSTGRES_CONTAINER=postgres
 TRINO_CONTAINER=trino
 
+# Basic-auth credentials for trino-basic. Override at runtime:
+#   TRINO_BASIC_USER=myuser TRINO_BASIC_PASSWORD='s3cret' ./scripts/setup.sh
+TRINO_BASIC_USER="${TRINO_BASIC_USER:-testuser}"
+TRINO_BASIC_PASSWORD="${TRINO_BASIC_PASSWORD:-testpass}"
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 pg() {
@@ -70,11 +75,11 @@ echo "Iceberg done."
 
 echo "=== Generating basic-auth password.db ==="
 if command -v htpasswd >/dev/null 2>&1; then
-  htpasswd -nbB testuser testpass > trino/basic-auth/password.db
-  echo "password.db written (testuser / testpass)."
+  htpasswd -nbB -C 10 "$TRINO_BASIC_USER" "$TRINO_BASIC_PASSWORD" > trino/basic-auth/password.db
+  echo "password.db written (user: $TRINO_BASIC_USER)."
 else
   echo "htpasswd not found — install apache2-utils / httpd-tools and run:"
-  echo "  htpasswd -nbB testuser testpass > trino/basic-auth/password.db"
+  echo "  htpasswd -nbB $TRINO_BASIC_USER '<password>' > trino/basic-auth/password.db"
   echo "Then restart trino-basic: docker compose --profile auth-test up -d trino-basic"
 fi
 
