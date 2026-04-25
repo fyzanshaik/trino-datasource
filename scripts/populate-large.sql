@@ -4,6 +4,8 @@
 -- Run with:
 --   docker exec -i postgres psql -U trino -d trino < scripts/populate-large.sql
 
+TRUNCATE TABLE prod_sales.large RESTART IDENTITY;
+
 INSERT INTO prod_sales.large
     (val_int, val_text, val_bigint, val_decimal, val_bool, val_timestamp, val_date, val_region, val_status)
 SELECT

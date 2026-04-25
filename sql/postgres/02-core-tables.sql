@@ -80,6 +80,14 @@ CREATE TABLE prod_sales.reserved_keywords (
     "col with space" VARCHAR(255)
 );
 
+-- quoted_table_name: exercises quoted table and column identifiers through Trino
+CREATE TABLE "qa-with-dash"."Table With Spaces" (
+    "Order ID"    BIGINT PRIMARY KEY,
+    "Select"      VARCHAR(255),
+    "event-date"  DATE,
+    "total cents" BIGINT
+);
+
 -- commented_table: exercises REGEXP_REPLACE + SUBSTRING 100K clamp on remarks
 CREATE TABLE prod_sales.commented_table (
     x INT,

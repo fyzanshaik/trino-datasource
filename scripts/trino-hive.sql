@@ -23,16 +23,22 @@ CREATE TABLE IF NOT EXISTS hive.events_raw.page_views (
     partitioned_by    = ARRAY['dt']
 );
 
-INSERT INTO hive.events_raw.page_views VALUES (1,  '/home',     TIMESTAMP '2026-04-01 10:00:00', '2026-04-01');
-INSERT INTO hive.events_raw.page_views VALUES (2,  '/products', TIMESTAMP '2026-04-02 11:00:00', '2026-04-02');
-INSERT INTO hive.events_raw.page_views VALUES (3,  '/cart',     TIMESTAMP '2026-04-03 12:00:00', '2026-04-03');
-INSERT INTO hive.events_raw.page_views VALUES (4,  '/checkout', TIMESTAMP '2026-04-04 13:00:00', '2026-04-04');
-INSERT INTO hive.events_raw.page_views VALUES (5,  '/home',     TIMESTAMP '2026-04-05 10:00:00', '2026-04-05');
-INSERT INTO hive.events_raw.page_views VALUES (6,  '/search',   TIMESTAMP '2026-04-06 09:00:00', '2026-04-06');
-INSERT INTO hive.events_raw.page_views VALUES (7,  '/products', TIMESTAMP '2026-04-07 14:00:00', '2026-04-07');
-INSERT INTO hive.events_raw.page_views VALUES (8,  '/about',    TIMESTAMP '2026-04-08 15:00:00', '2026-04-08');
-INSERT INTO hive.events_raw.page_views VALUES (9,  '/contact',  TIMESTAMP '2026-04-09 16:00:00', '2026-04-09');
-INSERT INTO hive.events_raw.page_views VALUES (10, '/home',     TIMESTAMP '2026-04-10 10:00:00', '2026-04-10');
+INSERT INTO hive.events_raw.page_views
+SELECT *
+FROM (
+    VALUES
+        (1,  '/home',     TIMESTAMP '2026-04-01 10:00:00', '2026-04-01'),
+        (2,  '/products', TIMESTAMP '2026-04-02 11:00:00', '2026-04-02'),
+        (3,  '/cart',     TIMESTAMP '2026-04-03 12:00:00', '2026-04-03'),
+        (4,  '/checkout', TIMESTAMP '2026-04-04 13:00:00', '2026-04-04'),
+        (5,  '/home',     TIMESTAMP '2026-04-05 10:00:00', '2026-04-05'),
+        (6,  '/search',   TIMESTAMP '2026-04-06 09:00:00', '2026-04-06'),
+        (7,  '/products', TIMESTAMP '2026-04-07 14:00:00', '2026-04-07'),
+        (8,  '/about',    TIMESTAMP '2026-04-08 15:00:00', '2026-04-08'),
+        (9,  '/contact',  TIMESTAMP '2026-04-09 16:00:00', '2026-04-09'),
+        (10, '/home',     TIMESTAMP '2026-04-10 10:00:00', '2026-04-10')
+) AS t(user_id, page_url, viewed_at, dt)
+WHERE NOT EXISTS (SELECT 1 FROM hive.events_raw.page_views);
 
 -- ── clickstream: multi-column partition ──────────────────────────────────────
 
@@ -48,12 +54,18 @@ CREATE TABLE IF NOT EXISTS hive.events_raw.clickstream (
     partitioned_by    = ARRAY['dt', 'region']
 );
 
-INSERT INTO hive.events_raw.clickstream VALUES (1, 'click',  '{"btn":"buy"}',    '2026-04-01', 'us-east');
-INSERT INTO hive.events_raw.clickstream VALUES (2, 'view',   '{"page":"/"}',     '2026-04-01', 'eu-west');
-INSERT INTO hive.events_raw.clickstream VALUES (3, 'search', '{"q":"widget"}',   '2026-04-02', 'us-east');
-INSERT INTO hive.events_raw.clickstream VALUES (4, 'click',  '{"btn":"cart"}',   '2026-04-02', 'eu-west');
-INSERT INTO hive.events_raw.clickstream VALUES (5, 'view',   '{"page":"/sale"}', '2026-04-03', 'ap-south');
-INSERT INTO hive.events_raw.clickstream VALUES (6, 'search', '{"q":"offer"}',    '2026-04-03', 'us-east');
+INSERT INTO hive.events_raw.clickstream
+SELECT *
+FROM (
+    VALUES
+        (1, 'click',  '{"btn":"buy"}',    '2026-04-01', 'us-east'),
+        (2, 'view',   '{"page":"/"}',     '2026-04-01', 'eu-west'),
+        (3, 'search', '{"q":"widget"}',   '2026-04-02', 'us-east'),
+        (4, 'click',  '{"btn":"cart"}',   '2026-04-02', 'eu-west'),
+        (5, 'view',   '{"page":"/sale"}', '2026-04-03', 'ap-south'),
+        (6, 'search', '{"q":"offer"}',    '2026-04-03', 'us-east')
+) AS t(user_id, event_type, payload, dt, region)
+WHERE NOT EXISTS (SELECT 1 FROM hive.events_raw.clickstream);
 
 -- ── orders_snapshot: non-partitioned table in Hive catalog ──────────────────
 -- Confirms is_partitioned=None / field absent from JSON output (#11 behavior)

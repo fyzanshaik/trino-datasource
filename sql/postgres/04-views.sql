@@ -15,6 +15,39 @@ SELECT c.id, c.email, p.name AS campaign_name
 FROM prod_sales.customers c
 CROSS JOIN prod_marketing.campaigns p;
 
+-- order_line_enriched: composite-key join view for SHOW CREATE VIEW coverage
+CREATE VIEW prod_sales.order_line_enriched AS
+SELECT
+    o.order_id,
+    o.line_item_id,
+    o.customer_id,
+    i.sku,
+    i.qty,
+    o.amount_cents
+FROM prod_sales.orders o
+LEFT JOIN prod_sales.order_items i
+  ON i.order_id = o.order_id
+ AND i.line_id = o.line_item_id;
+
+-- active_campaigns: cross-schema visible PostgreSQL view in a second schema
+CREATE VIEW prod_marketing.active_campaigns AS
+SELECT
+    id,
+    name,
+    channel,
+    budget,
+    start_date,
+    end_date
+FROM prod_marketing.campaigns
+WHERE end_date >= CURRENT_DATE;
+
+-- Quoted view identifier in a quoted schema.
+CREATE VIEW "qa-with-dash"."View With Spaces" AS
+SELECT
+    1 AS "Select",
+    'quoted view'::text AS "label with space",
+    CURRENT_DATE AS "as-of date";
+
 -- mv_top_customers: materialized view — Trino exposes this as a TABLE-type asset
 -- via the PostgreSQL JDBC connector; tests asset-type disambiguation
 CREATE MATERIALIZED VIEW prod_sales.mv_top_customers AS

@@ -8,8 +8,10 @@ This folder is a self-contained datasource fixture for testing Atlan Trino extra
 
 - `docker-compose.yml` starts Trino, PostgreSQL, MinIO, Hive Metastore, an optional basic-auth Trino instance, and an optional Cloudflare Tunnel container.
 - `sql/postgres/*.sql` is mounted into the PostgreSQL container and runs during database initialization. `00-metastore-db.sql` creates the `metastore` database required by Hive Metastore.
-- `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates Hive objects, creates Iceberg objects, and generates `trino/basic-auth/password.db` (bcrypt cost 10) when `htpasswd` is available. Credentials come from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` env vars with fallback defaults.
-- `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs.
+- `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates baseline Hive/Iceberg objects, creates configurable Trino-specific feature coverage, and generates `trino/basic-auth/password.db` (bcrypt cost 10) when `htpasswd` is available. Credentials come from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` env vars with fallback defaults.
+- `scripts/trino-feature-generate.py` emits generated Hive/Iceberg fixture SQL controlled by `TRINO_HIVE_FEATURE_SCHEMAS`, `TRINO_HIVE_TABLES_PER_SCHEMA`, `TRINO_ICEBERG_FEATURE_SCHEMAS`, and `TRINO_ICEBERG_TABLES_PER_SCHEMA`.
+- `scripts/validate-metadata.py` queries Trino to print visible catalog, schema, table, view, column, and partitioned-table counts.
+- `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs plus `hive_scale` and `iceberg_scale` aliases for many-catalog tests.
 - `trino/basic-auth` defines the auth-enabled Trino profile for tenant-facing tests. It sets `http-server.authentication.type=PASSWORD`, `http-server.process-forwarded=true` (so TLS-terminating tunnels count as HTTPS for auth), and an `internal-communication.shared-secret`.
 - The `postgres` service is started with `max_locks_per_transaction=512` so the 10 000-table bulk generation fits in a single transaction.
 
@@ -19,6 +21,7 @@ This folder is a self-contained datasource fixture for testing Atlan Trino extra
 docker compose up -d
 TRINO_BASIC_USER=myuser TRINO_BASIC_PASSWORD='s3cret' ./scripts/setup.sh
 docker compose --profile auth-test up -d trino-basic
+python3 scripts/validate-metadata.py
 docker compose --profile auth-test down
 ```
 
@@ -37,6 +40,8 @@ docker compose --profile auth-test --profile tunnel down -v
 
 ## Test Data Shape
 
+### High-cardinality column stress
+
 PostgreSQL includes:
 
 - Schemas such as `prod_sales`, `prod_marketing`, `dev_sales`, `staging`, quoted schema names, empty schemas, and internal-style schemas.
@@ -44,14 +49,50 @@ PostgreSQL includes:
 - Views and a materialized view for asset type and view SQL extraction paths.
 - Generated scale data: 20 `bulk_*` schemas, 10 000 tables, ~510 000 columns.
 
+### Trino-specific feature coverage
+
 Hive includes:
 
 - Partitioned tables with single and multi-column partitions.
 - A non-partitioned Parquet table.
+- Generated feature coverage by default: 4 `feature_hive_*` schemas, 6 partitioned tables per feature schema, and one view per feature schema.
 
 Iceberg includes:
 
 - An Iceberg table with `month(registered_date)` partition transform.
+- Generated feature coverage by default: 3 `feature_iceberg_*` schemas and 4 partitioned tables per feature schema.
+- Partition transforms across generated tables: `day`, `month`, `year`, `bucket`, `truncate`, and identity partitioning where supported by Trino/Iceberg.
+
+Catalog-scale coverage includes:
+
+- Primary catalogs: `postgres`, `hive`, `iceberg`.
+- Alias catalogs for many-catalog tests: `hive_scale`, `iceberg_scale`.
+- The alias catalogs point at the same local Hive metastore, so they should be included only for catalog-scale discovery tests.
+
+Default expected fixture shape:
+
+- PostgreSQL stress fixture remains 20 bulk schemas, 10 000 bulk tables, and ~510 000 bulk columns, plus core tables/views.
+- PostgreSQL also includes quoted/unusual identifiers visible through Trino, including `postgres."qa-with-dash"."Table With Spaces"` and `postgres."qa-with-dash"."View With Spaces"`.
+- Hive directly-created objects include 26 partitioned tables, 1 non-partitioned table, and 4 generated views before accounting for shared-metastore visibility.
+- Iceberg directly-created objects include 13 partitioned tables before accounting for shared-metastore visibility.
+- `scripts/validate-metadata.py` is the source of truth for actual Trino-visible counts by catalog.
+
+Scale knobs:
+
+```bash
+TRINO_HIVE_FEATURE_SCHEMAS=8 \
+TRINO_HIVE_TABLES_PER_SCHEMA=12 \
+TRINO_ICEBERG_FEATURE_SCHEMAS=4 \
+TRINO_ICEBERG_TABLES_PER_SCHEMA=8 \
+./scripts/setup.sh
+```
+
+Validation:
+
+```bash
+python3 scripts/validate-metadata.py
+TRINO_VALIDATE_CATALOGS=postgres,hive,iceberg python3 scripts/validate-metadata.py
+```
 
 ## Tenant Testing Guidance
 

@@ -23,12 +23,17 @@ CREATE TABLE IF NOT EXISTS iceberg.curated.dim_customer (
     partitioning = ARRAY['month(registered_date)']
 );
 
-INSERT INTO iceberg.curated.dim_customer VALUES
-    (1,  'Alice Chen',   DATE '2025-01-15'),
-    (2,  'Bob Patel',    DATE '2025-02-20'),
-    (3,  'Carol Smith',  DATE '2025-03-05'),
-    (4,  'David Kim',    DATE '2025-04-12'),
-    (5,  'Eva Torres',   DATE '2025-05-28'),
-    (6,  'Frank Nguyen', DATE '2026-01-03'),
-    (7,  'Grace Obi',    DATE '2026-02-14'),
-    (8,  'Henry Liu',    DATE '2026-03-22');
+INSERT INTO iceberg.curated.dim_customer
+SELECT *
+FROM (
+    VALUES
+        (1,  'Alice Chen',   DATE '2025-01-15'),
+        (2,  'Bob Patel',    DATE '2025-02-20'),
+        (3,  'Carol Smith',  DATE '2025-03-05'),
+        (4,  'David Kim',    DATE '2025-04-12'),
+        (5,  'Eva Torres',   DATE '2025-05-28'),
+        (6,  'Frank Nguyen', DATE '2026-01-03'),
+        (7,  'Grace Obi',    DATE '2026-02-14'),
+        (8,  'Henry Liu',    DATE '2026-03-22')
+) AS t(customer_id, name, registered_date)
+WHERE NOT EXISTS (SELECT 1 FROM iceberg.curated.dim_customer);

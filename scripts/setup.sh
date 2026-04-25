@@ -5,9 +5,10 @@
 #   1. Wait for postgres + Trino to be healthy.
 #   2. Generate 10 000 bulk tables in postgres (~5 min).
 #   3. Populate prod_sales.large with 1 M rows (~15 s).
-#   4. Create Hive schemas + partitioned tables via Trino.
-#   5. Create Iceberg schemas + tables via Trino.
-#   6. Generate the password.db for the basic-auth Trino (optional).
+#   4. Create baseline Hive schemas + partitioned tables via Trino.
+#   5. Create baseline Iceberg schemas + tables via Trino.
+#   6. Create configurable Trino-specific Hive/Iceberg feature coverage.
+#   7. Generate the password.db for the basic-auth Trino (optional).
 
 set -euo pipefail
 
@@ -18,6 +19,13 @@ TRINO_CONTAINER=trino
 #   TRINO_BASIC_USER=myuser TRINO_BASIC_PASSWORD='s3cret' ./scripts/setup.sh
 TRINO_BASIC_USER="${TRINO_BASIC_USER:-testuser}"
 TRINO_BASIC_PASSWORD="${TRINO_BASIC_PASSWORD:-testpass}"
+
+# Moderate Trino-specific feature coverage. Override to scale up/down:
+#   TRINO_HIVE_FEATURE_SCHEMAS=8 TRINO_HIVE_TABLES_PER_SCHEMA=12 ./scripts/setup.sh
+export TRINO_HIVE_FEATURE_SCHEMAS="${TRINO_HIVE_FEATURE_SCHEMAS:-4}"
+export TRINO_HIVE_TABLES_PER_SCHEMA="${TRINO_HIVE_TABLES_PER_SCHEMA:-6}"
+export TRINO_ICEBERG_FEATURE_SCHEMAS="${TRINO_ICEBERG_FEATURE_SCHEMAS:-3}"
+export TRINO_ICEBERG_TABLES_PER_SCHEMA="${TRINO_ICEBERG_TABLES_PER_SCHEMA:-4}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +79,13 @@ echo "=== Creating Iceberg schemas + tables ==="
 trino_exec < "$(dirname "$0")/trino-iceberg.sql"
 echo "Iceberg done."
 
-# ── 6. password.db for basic-auth Trino (optional) ───────────────────────────
+# ── 6. Trino feature coverage ────────────────────────────────────────────────
+
+echo "=== Creating Trino-specific feature coverage ==="
+python3 "$(dirname "$0")/trino-feature-generate.py" | trino_exec
+echo "Trino feature coverage done."
+
+# ── 7. password.db for basic-auth Trino (optional) ───────────────────────────
 
 echo "=== Generating basic-auth password.db ==="
 if command -v htpasswd >/dev/null 2>&1; then
@@ -89,4 +103,5 @@ echo "  Trino (no-auth):   http://localhost:8080"
 echo "  Trino (basic-auth): http://localhost:8081  [start with: docker compose --profile auth-test up -d]"
 echo "  MinIO console:      http://localhost:9001  (minio / minio123)"
 echo ""
-echo "  Crawl target for Atlan: host=localhost port=8080 catalog=postgres/hive/iceberg"
+echo "  Tenant-facing Atlan crawl target: host=localhost port=8081 catalog=postgres/hive/iceberg auth=basic"
+echo "  Use no-auth port 8080 only for local setup and validation."
