@@ -11,7 +11,7 @@ This folder is a self-contained datasource fixture for testing Atlan Trino extra
 - `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates baseline Hive/Iceberg objects, creates configurable Trino-specific feature coverage, and generates `trino/basic-auth/password.db` (bcrypt cost 10) when `htpasswd` is available. Credentials come from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` env vars with fallback defaults.
 - `scripts/trino-feature-generate.py` emits generated Hive/Iceberg fixture SQL controlled by `TRINO_HIVE_FEATURE_SCHEMAS`, `TRINO_HIVE_TABLES_PER_SCHEMA`, `TRINO_ICEBERG_FEATURE_SCHEMAS`, and `TRINO_ICEBERG_TABLES_PER_SCHEMA`.
 - `scripts/validate-metadata.py` queries Trino to print visible catalog, schema, table, view, column, and partitioned-table counts.
-- `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs plus `hive_scale` and `iceberg_scale` aliases for many-catalog tests.
+- `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs plus `hive_scale` and `iceberg_scale` aliases for many-catalog tests. The `postgres` catalog sets `case-insensitive-name-matching=true` so mixed-case / quoted PostgreSQL identifiers (e.g. `"qa-with-dash"."Table With Spaces"`) are queryable through Trino, not only listed in `system.jdbc.tables`.
 - `trino/basic-auth` defines the auth-enabled Trino profile for tenant-facing tests. It sets `http-server.authentication.type=PASSWORD`, `http-server.process-forwarded=true` (so TLS-terminating tunnels count as HTTPS for auth), and an `internal-communication.shared-secret`.
 - The `postgres` service is started with `max_locks_per_transaction=512` so the 10 000-table bulk generation fits in a single transaction.
 
@@ -55,12 +55,12 @@ Hive includes:
 
 - Partitioned tables with single and multi-column partitions.
 - A non-partitioned Parquet table.
-- Generated feature coverage by default: 4 `feature_hive_*` schemas, 6 partitioned tables per feature schema, and one view per feature schema.
+- Generated feature coverage by default: 4 `feature_hive_*` schemas, 6 partitioned tables per feature schema, and one view per feature schema. Each generated table is seeded with 3 rows spanning 3 distinct `(dt, region)` partition values so `$partitions` returns rows.
 
 Iceberg includes:
 
 - An Iceberg table with `month(registered_date)` partition transform.
-- Generated feature coverage by default: 3 `feature_iceberg_*` schemas and 4 partitioned tables per feature schema.
+- Generated feature coverage by default: 3 `feature_iceberg_*` schemas and 4 partitioned tables per feature schema, each seeded with 3 rows spanning multiple days/months/years/account_ids/regions so every partition transform produces non-empty `$partitions`.
 - Partition transforms across generated tables: `day`, `month`, `year`, `bucket`, `truncate`, and identity partitioning where supported by Trino/Iceberg.
 
 Catalog-scale coverage includes:
@@ -69,13 +69,23 @@ Catalog-scale coverage includes:
 - Alias catalogs for many-catalog tests: `hive_scale`, `iceberg_scale`.
 - The alias catalogs point at the same local Hive metastore, so they should be included only for catalog-scale discovery tests.
 
+### Shared Hive/Iceberg metastore — intentional cross-catalog ghost rows
+
+Hive and Iceberg use the same backing Hive metastore. Trino's metastore-walking code in each connector lists every entry in the metastore, including tables created by the other connector that it cannot read. The result, by design:
+
+- `hive` and `hive_scale` each list 13 Iceberg-owned tables in `system.jdbc.tables` with no rows in `system.jdbc.columns` (1 `iceberg.curated.dim_customer` + 12 `iceberg.feature_iceberg_*.partitioned_facts_*`).
+- `iceberg` and `iceberg_scale` each list 27 Hive-owned tables in `system.jdbc.tables` with no rows in `system.jdbc.columns` (24 `hive.feature_hive_*.partitioned_events_*` + 2 `hive.events_raw.*` + 1 `hive.warehouse.orders_snapshot`).
+- Total: 80 cross-catalog ghost rows across the four hive/iceberg catalogs.
+
+These ghost rows are kept on purpose — they exercise an important app behavior: any extractor that walks `system.jdbc.tables` without joining `system.jdbc.columns` will emit unqueryable assets. The Atlan Trino app uses an INNER JOIN, which correctly drops these. If a future connector or app changes that assumption, the fixture will surface the regression. To get a "clean" fixture without ghosts, give Hive and Iceberg separate metastores; the trade-off is that the app's INNER JOIN guard would no longer be exercised here.
+
 Default expected fixture shape:
 
-- PostgreSQL stress fixture remains 20 bulk schemas, 10 000 bulk tables, and ~510 000 bulk columns, plus core tables/views.
-- PostgreSQL also includes quoted/unusual identifiers visible through Trino, including `postgres."qa-with-dash"."Table With Spaces"` and `postgres."qa-with-dash"."View With Spaces"`.
-- Hive directly-created objects include 26 partitioned tables, 1 non-partitioned table, and 4 generated views before accounting for shared-metastore visibility.
-- Iceberg directly-created objects include 13 partitioned tables before accounting for shared-metastore visibility.
-- `scripts/validate-metadata.py` is the source of truth for actual Trino-visible counts by catalog.
+- PostgreSQL stress fixture remains 20 bulk schemas, 10 000 bulk tables, and ~510 170 bulk + core columns.
+- PostgreSQL also includes quoted/unusual identifiers visible **and queryable** through Trino, including `postgres."qa-with-dash"."Table With Spaces"` and `postgres."qa-with-dash"."View With Spaces"`. The Postgres catalog config sets `case-insensitive-name-matching=true` so the columns of these objects appear in `information_schema.columns` and `system.jdbc.columns`, and `SHOW CREATE TABLE` succeeds.
+- Hive directly-created objects: 27 base tables (3 baseline + 24 generated, all 26 partitioned tables seeded so `$partitions` returns rows; `orders_snapshot` is intentionally non-partitioned) and 4 generated views.
+- Iceberg directly-created objects: 13 base tables (1 baseline + 12 generated, all partitioned and seeded with rows that span every partition transform).
+- `scripts/validate-metadata.py` is the source of truth for actual Trino-visible counts by catalog. It distinguishes `visible` (rows in `system.jdbc.tables`), `queryable` (rows in `system.jdbc.columns`), `ghosts` (the difference, expected non-zero on hive/iceberg catalogs), `DDL-part` (tables partitioned by DDL), and `has-rows` (subset of DDL-part with non-empty `$partitions`).
 
 Scale knobs:
 

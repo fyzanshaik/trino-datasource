@@ -66,11 +66,14 @@ def visible_catalogs() -> list[str]:
     return [catalog for catalog in catalogs if catalog != "system"]
 
 
-def partitioned_table_count(catalog: str, base_tables: int) -> tuple[str, str]:
+def partitioned_table_count(
+    catalog: str, base_tables: int
+) -> tuple[str, str, str]:
+    """Returns (ddl_partitioned, with_partition_rows, note)."""
     if "hive" not in catalog and "iceberg" not in catalog:
-        return "0", ""
+        return "0", "0", ""
     if base_tables > MAX_PARTITION_SCAN:
-        return "skipped", f">{MAX_PARTITION_SCAN} base tables"
+        return "skipped", "skipped", f">{MAX_PARTITION_SCAN} base tables"
 
     catalog_q = quote_identifier(catalog)
     table_rows = rows(
@@ -83,7 +86,8 @@ def partitioned_table_count(catalog: str, base_tables: int) -> tuple[str, str]:
         """
     )
 
-    count = 0
+    ddl_count = 0
+    with_rows_count = 0
     errors = 0
     for schema, table in table_rows:
         name = ".".join(
@@ -95,20 +99,37 @@ def partitioned_table_count(catalog: str, base_tables: int) -> tuple[str, str]:
             errors += 1
             continue
         if "partitioned_by = ARRAY[" in ddl or "partitioning = ARRAY[" in ddl:
-            count += 1
+            ddl_count += 1
+            partitions_relation = ".".join(
+                [
+                    quote_identifier(catalog),
+                    quote_identifier(schema),
+                    quote_identifier(table + "$partitions"),
+                ]
+            )
+            try:
+                rows_present = scalar(
+                    f"SELECT count(*) FROM {partitions_relation}"
+                )
+            except RuntimeError:
+                rows_present = 0
+            if rows_present > 0:
+                with_rows_count += 1
 
     note = f"{errors} SHOW CREATE failures" if errors else ""
-    return str(count), note
+    return str(ddl_count), str(with_rows_count), note
 
 
 @dataclass
 class CatalogCounts:
     catalog: str
     schemas: int
-    tables: int
+    visible_tables: int
+    queryable_tables: int
     views: int
     columns: int
-    partitioned_tables: str
+    ddl_partitioned: str
+    with_partition_rows: str
     note: str
 
 
@@ -121,12 +142,21 @@ def count_catalog(catalog: str) -> CatalogCounts:
         WHERE schema_name <> 'information_schema'
         """
     )
-    tables = scalar(
+    visible_tables = scalar(
         f"""
         SELECT count(*)
-        FROM {catalog_q}.information_schema.tables
-        WHERE table_schema <> 'information_schema'
-          AND table_type = 'BASE TABLE'
+        FROM system.jdbc.tables
+        WHERE table_cat = '{catalog}'
+          AND table_schem <> 'information_schema'
+          AND table_type IN ('TABLE', 'VIEW')
+        """
+    )
+    queryable_tables = scalar(
+        f"""
+        SELECT count(DISTINCT (table_schem, table_name))
+        FROM system.jdbc.columns
+        WHERE table_cat = '{catalog}'
+          AND table_schem <> 'information_schema'
         """
     )
     views = scalar(
@@ -144,8 +174,20 @@ def count_catalog(catalog: str) -> CatalogCounts:
         WHERE table_schema <> 'information_schema'
         """
     )
-    partitioned_tables, note = partitioned_table_count(catalog, tables)
-    return CatalogCounts(catalog, schemas, tables, views, columns, partitioned_tables, note)
+    ddl_partitioned, with_partition_rows, note = partitioned_table_count(
+        catalog, visible_tables
+    )
+    return CatalogCounts(
+        catalog,
+        schemas,
+        visible_tables,
+        queryable_tables,
+        views,
+        columns,
+        ddl_partitioned,
+        with_partition_rows,
+        note,
+    )
 
 
 def main() -> int:
@@ -160,22 +202,48 @@ def main() -> int:
     print(f"Visible catalogs excluding system: {len(catalogs)}")
     print()
     print(
-        f"{'catalog':<18} {'schemas':>8} {'tables':>8} {'views':>8} "
-        f"{'columns':>10} {'partitioned':>12}  note"
+        f"{'catalog':<16} {'schemas':>7} {'visible':>8} {'queryable':>10} "
+        f"{'ghosts':>7} {'views':>6} {'columns':>9} "
+        f"{'DDL-part':>9} {'has-rows':>9}  note"
     )
-    print("-" * 86)
+    print("-" * 110)
     for item in counts:
+        ghosts = item.visible_tables - item.queryable_tables
         print(
-            f"{item.catalog:<18} {item.schemas:>8} {item.tables:>8} "
-            f"{item.views:>8} {item.columns:>10} "
-            f"{item.partitioned_tables:>12}  {item.note}"
+            f"{item.catalog:<16} {item.schemas:>7} {item.visible_tables:>8} "
+            f"{item.queryable_tables:>10} {ghosts:>7} {item.views:>6} "
+            f"{item.columns:>9} {item.ddl_partitioned:>9} "
+            f"{item.with_partition_rows:>9}  {item.note}"
         )
 
     print()
-    print("Default fixture shape to expect after setup:")
-    print("- postgres keeps 20 bulk schemas, 10,000 bulk tables, and 510,000 bulk columns")
-    print("- hive adds configurable feature schemas/tables plus partitioned baseline tables")
-    print("- iceberg adds configurable partition-transform tables plus baseline dim_customer")
+    print("Column key:")
+    print("  visible      = system.jdbc.tables rows (TABLE + VIEW)")
+    print(
+        "  queryable    = distinct objects in system.jdbc.columns "
+        "(rows the app emits via INNER JOIN)"
+    )
+    print(
+        "  ghosts       = visible - queryable. Expected non-zero on hive/iceberg "
+        "because they share one"
+    )
+    print(
+        "                 metastore, so each catalog lists the other's tables but "
+        "cannot read columns."
+    )
+    print("  DDL-part     = tables whose SHOW CREATE TABLE has partitioned_by/partitioning")
+    print("  has-rows     = subset of DDL-part where $partitions returns >= 1 row")
+    print()
+    print("Default fixture shape after setup:")
+    print("- postgres keeps 20 bulk schemas, 10,000 bulk tables, 510,000 bulk columns,")
+    print(
+        "  plus quoted/unusual identifier objects under postgres.\"qa-with-dash\"."
+    )
+    print("- hive adds 4 feature schemas (default) with 6 partitioned tables + 1 view each,")
+    print("  plus 3 baseline tables (page_views, clickstream, orders_snapshot).")
+    print("- iceberg adds 3 feature schemas (default) with 4 partitioned tables each,")
+    print("  plus baseline dim_customer.")
+    print("- hive_scale and iceberg_scale alias the same metastore for many-catalog tests.")
     return 0
 
 

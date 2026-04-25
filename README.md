@@ -86,12 +86,21 @@ The data is intentionally synthetic and designed to exercise connector behavior:
 By default, `setup.sh` also creates moderate Trino-native coverage:
 
 - Hive baseline: partitioned `page_views`, partitioned `clickstream`, and non-partitioned `orders_snapshot`
-- Hive feature scale: 4 `feature_hive_*` schemas x 6 partitioned tables each, plus one view per feature schema
+- Hive feature scale: 4 `feature_hive_*` schemas x 6 partitioned tables each, plus one view per feature schema. Every generated partitioned table is seeded with 3 rows across 3 distinct `(dt, region)` partition values so `$partitions` returns rows.
 - Iceberg baseline: `iceberg.curated.dim_customer` partitioned by `month(registered_date)`
-- Iceberg feature scale: 3 `feature_iceberg_*` schemas x 4 partitioned tables each
+- Iceberg feature scale: 3 `feature_iceberg_*` schemas x 4 partitioned tables each, seeded with 3 rows that span multiple days/months/years/account_ids/regions so every partition transform (`day`, `month`, `year`, `bucket`, `truncate`, identity) produces non-empty `$partitions`.
 - Iceberg partition transforms across generated tables: `day`, `month`, `year`, `bucket`, `truncate`, and identity partitioning
-- Quoted/unusual PostgreSQL identifiers visible through Trino, including `postgres."qa-with-dash"."Table With Spaces"`
+- Quoted/unusual PostgreSQL identifiers visible **and queryable** through Trino, including `postgres."qa-with-dash"."Table With Spaces"` and `postgres."qa-with-dash"."View With Spaces"`. The Postgres catalog config sets `case-insensitive-name-matching=true`, so columns are exposed via `information_schema.columns` / `system.jdbc.columns` and `SHOW CREATE TABLE` succeeds. (Trino 448's PostgreSQL connector reports PG views as `BASE TABLE`, so `SHOW CREATE VIEW` does not work — this is a connector limitation, not a fixture gap.)
 - Catalog-scale aliases: `hive_scale` and `iceberg_scale`
+
+### Shared Hive/Iceberg metastore — intentional cross-catalog ghost rows
+
+The `hive` and `iceberg` catalogs share one Hive metastore, so each connector lists the other's tables in `system.jdbc.tables` even though it cannot read their columns. Per default fixture:
+
+- `hive` / `hive_scale` each list 13 Iceberg-owned tables with no `system.jdbc.columns` rows.
+- `iceberg` / `iceberg_scale` each list 27 Hive-owned tables with no `system.jdbc.columns` rows.
+
+These 80 cross-catalog "ghost" rows are intentional. They exercise the assumption that any catalog walker must INNER JOIN `system.jdbc.columns` to drop unqueryable rows; the Atlan Trino app does this correctly. To get a clean fixture without ghosts, split Hive and Iceberg into separate metastores — the trade-off is that the INNER JOIN guard is no longer exercised here.
 
 Scale knobs:
 
@@ -117,7 +126,12 @@ Useful overrides:
 TRINO_VALIDATE_CATALOGS=postgres,hive,iceberg python3 scripts/validate-metadata.py
 ```
 
-The script prints Trino-visible counts by catalog: schemas, tables, views, columns,
-and partitioned tables. Because Hive and Iceberg share the local Hive metastore,
-schema lists may overlap between those catalogs; treat the script output as the
-source of truth for what the Atlan Trino app will see.
+The script prints Trino-visible counts by catalog. The columns distinguish:
+
+- `visible` — rows in `system.jdbc.tables` (`TABLE` + `VIEW`).
+- `queryable` — distinct objects in `system.jdbc.columns` (i.e. what the app emits via INNER JOIN).
+- `ghosts` — `visible − queryable`. Expected non-zero on hive/iceberg because of the shared metastore (see above).
+- `DDL-part` — tables whose `SHOW CREATE TABLE` declares partitioning.
+- `has-rows` — subset of `DDL-part` whose `$partitions` returns ≥ 1 row.
+
+Treat the script output as the source of truth for what the Atlan Trino app will see.

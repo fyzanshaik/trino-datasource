@@ -58,6 +58,29 @@ def generate_hive() -> None:
             emit(");")
             emit()
 
+            # Tiny seed so $partitions returns rows. 3 distinct (dt, region) combos.
+            emit(f"INSERT INTO hive.{schema}.{table}")
+            emit("SELECT * FROM (VALUES")
+            emit(
+                "    (1, 1001, 1.50, TIMESTAMP '2026-04-01 10:00:00',"
+                " 'p1', '2026-04-01', 'us-east'),"
+            )
+            emit(
+                "    (2, 1002, 2.50, TIMESTAMP '2026-04-02 11:00:00',"
+                " 'p2', '2026-04-02', 'eu-west'),"
+            )
+            emit(
+                "    (3, 1003, 3.50, TIMESTAMP '2026-04-03 12:00:00',"
+                " 'p3', '2026-04-03', 'ap-south')"
+            )
+            emit(
+                ") AS t(event_id, customer_id, amount, event_ts, payload, dt, region)"
+            )
+            emit(
+                f"WHERE NOT EXISTS (SELECT 1 FROM hive.{schema}.{table});"
+            )
+            emit()
+
         view_table = "partitioned_events_001"
         emit(f"CREATE OR REPLACE VIEW hive.{schema}.vw_event_rollup AS")
         emit("SELECT")
@@ -98,6 +121,31 @@ def generate_iceberg() -> None:
             emit(f"    location     = 's3a://iceberg/{schema}/{table}/',")
             emit(f"    partitioning = ARRAY['{transform}']")
             emit(");")
+            emit()
+
+            # Tiny seed spanning multiple days/months/years/account_ids/regions
+            # so day/month/year/bucket/truncate/identity transforms all
+            # produce non-empty $partitions.
+            emit(f"INSERT INTO iceberg.{schema}.{table}")
+            emit("SELECT * FROM (VALUES")
+            emit(
+                "    (1, 1001, TIMESTAMP '2025-01-15 10:00:00.000000',"
+                " DATE '2025-01-15', 'us-east-1', 'p1', DECIMAL '1.50'),"
+            )
+            emit(
+                "    (2, 1002, TIMESTAMP '2025-06-20 11:00:00.000000',"
+                " DATE '2025-06-20', 'eu-west-1', 'p2', DECIMAL '2.50'),"
+            )
+            emit(
+                "    (3, 1003, TIMESTAMP '2026-03-22 12:00:00.000000',"
+                " DATE '2026-03-22', 'ap-south-1', 'p3', DECIMAL '3.50')"
+            )
+            emit(
+                ") AS t(event_id, account_id, event_ts, event_date, region, payload, amount)"
+            )
+            emit(
+                f"WHERE NOT EXISTS (SELECT 1 FROM iceberg.{schema}.{table});"
+            )
             emit()
 
 
