@@ -53,8 +53,19 @@ if (( REBUILD )); then
 fi
 
 # ── 3. Bring up containers ────────────────────────────────────────────
+# If a Cloudflare tunnel token is set in .env, also bring up the cloudflared
+# service via the `tunnel` profile. This makes the full bring-up (Trino +
+# public tunnel) a single command on machines that have a token configured.
+COMPOSE_ARGS=()
+TUNNEL_ENABLED=0
+if [[ -n "${CLOUDFLARED_TOKEN:-}" ]]; then
+    echo "=== CLOUDFLARED_TOKEN detected — enabling tunnel profile ==="
+    COMPOSE_ARGS+=(--profile tunnel)
+    TUNNEL_ENABLED=1
+fi
+
 echo "=== Starting containers ==="
-docker compose up -d
+docker compose "${COMPOSE_ARGS[@]}" up -d
 
 echo "=== Waiting for Trino healthcheck ==="
 # /v1/info returns 200 before catalogs finish loading, so we issue a real query
@@ -102,6 +113,29 @@ fi
 echo "=== Validating counts ==="
 "$PY" scripts/validate-counts.py || true   # don't hard-fail on count drift
 
+# ── 8. Tunnel readiness (if enabled) ──────────────────────────────────
+if (( TUNNEL_ENABLED )); then
+    echo "=== Waiting for Cloudflare tunnel to register ==="
+    # cloudflared logs "Registered tunnel connection" once each connector is
+    # connected to a Cloudflare edge POP. We poll for up to 60s.
+    for i in {1..30}; do
+        if docker logs cloudflared-lineage 2>&1 | grep -q "Registered tunnel connection"; then
+            echo "  Tunnel registered."
+            break
+        fi
+        sleep 2
+        if (( i == 30 )); then
+            echo "  WARN: tunnel did not register in 60s. Check 'docker compose logs cloudflared'." >&2
+        fi
+    done
+fi
+
 echo
 echo "Done. Trino is at http://localhost:${TRINO_PORT:-8080} (user: trino, no password)"
-echo "Catalogs: analytics${ENABLE_SECONDARY_CATALOGS:+, events, archive}"
+echo "Catalogs: analytics"
+if (( TUNNEL_ENABLED )); then
+    echo
+    echo "Cloudflare tunnel is up. Public hostname is whatever you configured in"
+    echo "Cloudflare Zero Trust → Tunnels → (this tunnel) → Public Hostnames."
+    echo "Inspect with: docker compose logs --tail=20 cloudflared"
+fi

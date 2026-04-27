@@ -150,10 +150,13 @@ tenant, expose Trino via a Cloudflare Tunnel:
    (Trino is the container service name on the compose network).
 3. **Copy the tunnel token** Cloudflare displays.
 4. **Add to `.env`**: `CLOUDFLARED_TOKEN=<your-token>`
-5. **Start the tunnel**:
-   ```bash
-   docker compose --profile tunnel up -d cloudflared
-   ```
+5. **Run `./scripts/setup.sh`** — it auto-detects `CLOUDFLARED_TOKEN` and
+   adds `--profile tunnel` to the docker compose up command. It also waits
+   for cloudflared to log `Registered tunnel connection` before declaring
+   success. No separate command needed.
+
+   (If you want to start the tunnel separately on an already-running stack:
+   `docker compose --profile tunnel up -d cloudflared`.)
 
 Trino is now reachable at the Cloudflare hostname over HTTPS. From the tenant:
 
