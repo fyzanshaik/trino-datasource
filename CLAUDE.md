@@ -218,6 +218,48 @@ Verification scripts live in `../atlan-trino-app/parity/`:
 
 ---
 
+## Troubleshooting
+
+**Port 8080 already in use.**
+```
+ERROR: ... bind: address already in use
+```
+Either free the port or override it. The compose file respects `TRINO_PORT`
+from `.env` — change to e.g. `TRINO_PORT=18080`, then re-run setup.
+
+```bash
+# find what's using 8080
+lsof -i :8080
+# or override
+echo 'TRINO_PORT=18080' >> .env
+docker compose down && ./scripts/setup.sh
+```
+
+**Trino healthcheck times out (180s).**
+```
+ERROR: Trino did not accept queries in 180s.
+```
+Setup logs the last 50 lines of `docker compose logs trino` automatically.
+Common causes:
+
+- Hive Metastore container exited — check `docker compose logs hive-metastore`.
+  If it's complaining about the `metastore` database, the Postgres init script
+  didn't run (e.g. you pre-existing volume is from another fixture). Run
+  `docker compose down -v` and `./scripts/setup.sh` to reset volumes.
+- Trino itself OOM'd — `query.max-memory=4GB` is in `trino/etc/config.properties`.
+  Drop it to 2GB if your machine is tight.
+- A stale catalog `.properties` file is referencing infra that's no longer in
+  docker-compose (e.g. a stray `postgres.properties`). Confirm
+  `trino/etc/catalog/` contains only `analytics.properties`.
+
+**3 of 23 replay views are skipped during seed.**
+This is expected (`vw_v0021`, `vw_v0022`, `vw_v0023`). `seed-replay.py` logs
+each one and continues. The remaining 20 views fully cover all the parser-
+stress shapes the FreeWheel fixture exercises. **The fixture is healthy with
+20/23 — no action needed.**
+
+If `validate-counts.py` reports counts in range, the fixture is good.
+
 ## Cleanup
 
 ```bash
