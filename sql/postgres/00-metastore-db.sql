@@ -1,6 +1,4 @@
--- Creates the database used by Hive Metastore.
--- Runs before the other init scripts because of the 00- prefix.
--- Without this the hive-metastore container enters a crash loop because its
--- JDBC URL points at postgres:5432/metastore which does not exist by default.
-
+-- Provision the metastore database. The Hive Metastore container creates its
+-- own schema on first start.
 CREATE DATABASE metastore;
+GRANT ALL PRIVILEGES ON DATABASE metastore TO trino;
