@@ -9,6 +9,9 @@
 # Generated Trino basic-auth password database.
 trino/basic-auth/password.db
 
+# Generated Trino JWT HMAC signing key — never commit.
+trino/basic-auth/jwt-key
+
 # Runtime data is stored in Docker volumes, but keep common local spill paths out.
 data/
 tmp/

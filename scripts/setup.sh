@@ -97,6 +97,23 @@ else
   echo "Then restart trino-basic: docker compose --profile auth-test up -d trino-basic"
 fi
 
+# ── 8. JWT HMAC signing key for trino-basic (optional, idempotent) ───────────
+# trino-basic accepts both PASSWORD and JWT. The HMAC secret signs HS256 tokens.
+# Mint a token with: ./scripts/generate-jwt.sh
+
+JWT_KEY_FILE="trino/basic-auth/jwt-key"
+echo "=== Ensuring JWT signing key ==="
+if [[ -s "$JWT_KEY_FILE" ]]; then
+  echo "$JWT_KEY_FILE already exists — leaving in place."
+else
+  # Strip trailing newline so the key seen by `cat` (in generate-jwt.sh)
+  # matches the bytes Trino reads from the file.
+  openssl rand -base64 48 | tr -d '\n' > "$JWT_KEY_FILE"
+  chmod 600 "$JWT_KEY_FILE"
+  echo "$JWT_KEY_FILE written."
+fi
+echo "Mint a token: ./scripts/generate-jwt.sh [subject] [ttl-seconds]"
+
 echo ""
 echo "=== Setup complete ==="
 echo "  Trino (no-auth):   http://localhost:8080"
