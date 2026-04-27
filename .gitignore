@@ -1,18 +1,10 @@
-.DS_Store
-
-# Local environment (Cloudflare tunnel token, etc.) — never commit
 .env
+*.pyc
+__pycache__/
+.venv/
+.idea/
+.vscode/
 
-# Local agent/editor state
-.claude/settings.local.json
-
-# Generated Trino basic-auth password database.
-trino/basic-auth/password.db
-
-# Generated Trino JWT HMAC signing key — never commit.
-trino/basic-auth/jwt-key
-
-# Runtime data is stored in Docker volumes, but keep common local spill paths out.
-data/
-tmp/
-*.log
+# The mapping is the only artifact that links anonymized names back to the
+# original source — must never be committed. Anonymized DDL is fine.
+replay/identifier-mapping.json

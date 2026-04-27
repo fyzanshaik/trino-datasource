@@ -1,126 +1,58 @@
-# Agent Context
+# Agent context — source-provisioning-lineage
 
-## Purpose
+## What this is
 
-This folder is a self-contained datasource fixture for testing Atlan Trino extraction and publish behavior. It is not an application service; it is infrastructure plus seed data that exposes multiple catalogs through Trino.
+A self-contained Trino fixture for **lineage-pipeline testing**. Not an Atlan app. Not a service. A Docker-Compose stack + DDL generators that recreate a production-shaped Trino source on localhost so the full `extract → QI → lineage-app → publish` DAG can be exercised end-to-end.
 
-## Architecture
+It is **not** a replacement for `source-provisioning` — that repo handles scale and connector regression. This repo focuses on lineage shapes and exists in parallel.
 
-- `docker-compose.yml` starts Trino, PostgreSQL, MinIO, Hive Metastore, an optional basic-auth Trino instance, and an optional Cloudflare Tunnel container.
-- `sql/postgres/*.sql` is mounted into the PostgreSQL container and runs during database initialization. `00-metastore-db.sql` creates the `metastore` database required by Hive Metastore.
-- `scripts/setup.sh` runs after containers are up. It generates bulk Postgres tables, populates a large table, creates baseline Hive/Iceberg objects, creates configurable Trino-specific feature coverage, and generates `trino/basic-auth/password.db` (bcrypt cost 10) when `htpasswd` is available. Credentials come from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` env vars with fallback defaults.
-- `scripts/trino-feature-generate.py` emits generated Hive/Iceberg fixture SQL controlled by `TRINO_HIVE_FEATURE_SCHEMAS`, `TRINO_HIVE_TABLES_PER_SCHEMA`, `TRINO_ICEBERG_FEATURE_SCHEMAS`, and `TRINO_ICEBERG_TABLES_PER_SCHEMA`.
-- `scripts/validate-metadata.py` queries Trino to print visible catalog, schema, table, view, column, and partitioned-table counts.
-- `trino/etc/catalog/*.properties` defines the `postgres`, `hive`, and `iceberg` catalogs plus `hive_scale` and `iceberg_scale` aliases for many-catalog tests. The `postgres` catalog sets `case-insensitive-name-matching=true` so mixed-case / quoted PostgreSQL identifiers (e.g. `"qa-with-dash"."Table With Spaces"`) are queryable through Trino, not only listed in `system.jdbc.tables`.
-- `trino/basic-auth` defines the auth-enabled Trino profile for tenant-facing tests. It sets `http-server.authentication.type=PASSWORD,JWT` (both auth methods accepted on the same endpoint), `http-server.process-forwarded=true` (so TLS-terminating tunnels count as HTTPS for auth), `http-server.authentication.jwt.key-file=/etc/trino/jwt-key`, and an `internal-communication.shared-secret`. The JWT HMAC secret at `trino/basic-auth/jwt-key` is base64-encoded; Trino decodes it before signing/verifying. `scripts/generate-jwt.sh` mints HS256 tokens against the same key (it base64-decodes the file before HMAC). The `sub` claim maps to the Trino user.
-- The `postgres` service is started with `max_locks_per_transaction=512` so the 10 000-table bulk generation fits in a single transaction.
+## Where the assets come from
 
-## Main Commands
+The 23 views + their upstream tables in `replay/` are derived from a single production Trino run captured as a golden dataset under `atlan-trino-app/new-golden-dataset/`. The capture step:
 
-```bash
-docker compose up -d
-TRINO_BASIC_USER=myuser TRINO_BASIC_PASSWORD='s3cret' ./scripts/setup.sh
-docker compose --profile auth-test up -d trino-basic
-python3 scripts/validate-metadata.py
-docker compose --profile auth-test down
-```
+1. Reads `new-golden-dataset/extract/{view-db,table-db,columns-db}.json` (raw JDBC fetch output) and `new-golden-dataset/expected-output/view-db-0.json` (transformed views with full DDL).
+2. Walks each view DDL with sqlglot's Trino dialect, collects every `(catalog, schema, table)` reference.
+3. Builds a deterministic identifier mapping: every original catalog/schema/table/column name gets a generic warehouse name (`analytics`, `mart_NN`, `fact_T0001`, `col_C00001`, `vw_V0001`).
+4. Rewrites both the source-table column lists and the view DDLs via sqlglot AST transform — replacing identifier nodes only, preserving SQL structure, literals, and operators.
+5. Writes `replay/views.json`, `replay/source_tables.json` (safe to commit) and `replay/identifier-mapping.json` (gitignored, debug-only).
 
-Expose via Cloudflare Tunnel (optional):
+After that the fixture is self-contained — the original golden dataset is no longer needed at runtime.
 
-```bash
-echo 'CLOUDFLARED_TOKEN=...' > .env   # gitignored
-docker compose --profile tunnel up -d cloudflared
-```
+## Anonymization rules (load-bearing)
 
-To wipe generated Docker volumes:
+- **What is renamed**: catalog names, schema names, table names, view names, column names. Including all references inside `CREATE VIEW … AS SELECT … FROM …`.
+- **What is NOT renamed**: SQL operators, function names, string literals (including business terms inside string equality checks), numeric literals, whitespace.
+- **Determinism**: The mapping is reproducible. Sort identifiers by name, assign sequential opaque IDs. Re-running `extract-replay-data.py` against the same input produces the same output.
+- **Independence**: Column-name mapping is global, not per-table. Two source tables that both contain column `network_id` rename to the same generic name. This is required for `UNION` views where both sides reference the same column.
 
-```bash
-docker compose --profile auth-test --profile tunnel down -v
-```
+The mapping itself is the only artifact that ties anonymized names back to the original source. It is gitignored. Committing it would defeat the anonymization.
 
-## Test Data Shape
+## Trino topology
 
-### High-cardinality column stress
+**Single catalog by default** — `analytics`, backed by a Hive metastore.
 
-PostgreSQL includes:
+The fixture originally shipped with 3 catalogs (analytics / events / archive) but they all pointed at the same Hive metastore, which causes 3× asset multiplication on extraction (every Hive database is visible from every Trino catalog that connects to the metastore — Hive has no real catalog concept, just databases). FreeWheel's production setup had 3 *distinct* metastores, so they got 1×; we can't replicate that locally without 3 separate Hive instances, so we simplified to one catalog. This gives clean 1× extraction numbers that match `validate-counts.py`.
 
-- Schemas such as `prod_sales`, `prod_marketing`, `dev_sales`, `staging`, quoted schema names, empty schemas, and internal-style schemas.
-- Tables with single-column primary keys, composite primary keys, foreign keys, composite foreign keys, no-key control tables, quoted/reserved columns, comments, wide column sets, and varying row counts.
-- Views and a materialized view for asset type and view SQL extraction paths.
-- Generated scale data: 20 `bulk_*` schemas, 10 000 tables, ~510 000 columns.
+To exercise multi-catalog connector behavior, drop `events.properties` / `archive.properties` back into `trino/etc/catalog/` and restart Trino — both files are kept in `git history` for reference.
 
-### Trino-specific feature coverage
+## Asset target
 
-Hive includes:
+| Source | Tables | Views | Columns | Total assets |
+|---|---|---|---|---|
+| Replay | ~80 | 23 | ~10,000 | ~10,100 |
+| Synthetic baseline | 30–50 | 0 | ~3,000 | ~3,030 |
+| Synthetic lineage | 10–20 | 10–15 | ~1,500 | ~1,525 |
+| **Total** | **~120–150** | **~33–38** | **~14,500** | **~14,700** |
 
-- Partitioned tables with single and multi-column partitions.
-- A non-partitioned Parquet table.
-- Generated feature coverage by default: 4 `feature_hive_*` schemas, 6 partitioned tables per feature schema, and one view per feature schema. Each generated table is seeded with 3 rows spanning 3 distinct `(dt, region)` partition values so `$partitions` returns rows.
+Tunable via env knobs in `.env`. Default config lands in the 10–15k range.
 
-Iceberg includes:
+## What this does NOT do
 
-- An Iceberg table with `month(registered_date)` partition transform.
-- Generated feature coverage by default: 3 `feature_iceberg_*` schemas and 4 partitioned tables per feature schema, each seeded with 3 rows spanning multiple days/months/years/account_ids/regions so every partition transform produces non-empty `$partitions`.
-- Partition transforms across generated tables: `day`, `month`, `year`, `bucket`, `truncate`, and identity partitioning where supported by Trino/Iceberg.
+- Provision Atlan credentials or create connections (do that via `atlan-trino-app`'s dev-flow).
+- Trigger workflows on a real tenant (only against local apps via `run-parity.sh`).
+- Run any of the SDK apps. Those are sibling repos.
+- Generate query history (no `mine` workflow data — only view-DDL lineage).
 
-Catalog-scale coverage includes:
+## Key constraint
 
-- Primary catalogs: `postgres`, `hive`, `iceberg`.
-- Alias catalogs for many-catalog tests: `hive_scale`, `iceberg_scale`.
-- The alias catalogs point at the same local Hive metastore, so they should be included only for catalog-scale discovery tests.
-
-### Shared Hive/Iceberg metastore — intentional cross-catalog ghost rows
-
-Hive and Iceberg use the same backing Hive metastore. Trino's metastore-walking code in each connector lists every entry in the metastore, including tables created by the other connector that it cannot read. The result, by design:
-
-- `hive` and `hive_scale` each list 13 Iceberg-owned tables in `system.jdbc.tables` with no rows in `system.jdbc.columns` (1 `iceberg.curated.dim_customer` + 12 `iceberg.feature_iceberg_*.partitioned_facts_*`).
-- `iceberg` and `iceberg_scale` each list 27 Hive-owned tables in `system.jdbc.tables` with no rows in `system.jdbc.columns` (24 `hive.feature_hive_*.partitioned_events_*` + 2 `hive.events_raw.*` + 1 `hive.warehouse.orders_snapshot`).
-- Total: 80 cross-catalog ghost rows across the four hive/iceberg catalogs.
-
-These ghost rows are kept on purpose — they exercise an important app behavior: any extractor that walks `system.jdbc.tables` without joining `system.jdbc.columns` will emit unqueryable assets. The Atlan Trino app uses an INNER JOIN, which correctly drops these. If a future connector or app changes that assumption, the fixture will surface the regression. To get a "clean" fixture without ghosts, give Hive and Iceberg separate metastores; the trade-off is that the app's INNER JOIN guard would no longer be exercised here.
-
-Default expected fixture shape:
-
-- PostgreSQL stress fixture remains 20 bulk schemas, 10 000 bulk tables, and ~510 170 bulk + core columns.
-- PostgreSQL also includes quoted/unusual identifiers visible **and queryable** through Trino, including `postgres."qa-with-dash"."Table With Spaces"` and `postgres."qa-with-dash"."View With Spaces"`. The Postgres catalog config sets `case-insensitive-name-matching=true` so the columns of these objects appear in `information_schema.columns` and `system.jdbc.columns`, and `SHOW CREATE TABLE` succeeds.
-- Hive directly-created objects: 27 base tables (3 baseline + 24 generated, all 26 partitioned tables seeded so `$partitions` returns rows; `orders_snapshot` is intentionally non-partitioned) and 4 generated views.
-- Iceberg directly-created objects: 13 base tables (1 baseline + 12 generated, all partitioned and seeded with rows that span every partition transform).
-- `scripts/validate-metadata.py` is the source of truth for actual Trino-visible counts by catalog. It distinguishes `visible` (rows in `system.jdbc.tables`), `queryable` (rows in `system.jdbc.columns`), `ghosts` (the difference, expected non-zero on hive/iceberg catalogs), `DDL-part` (tables partitioned by DDL), and `has-rows` (subset of DDL-part with non-empty `$partitions`).
-
-Scale knobs:
-
-```bash
-TRINO_HIVE_FEATURE_SCHEMAS=8 \
-TRINO_HIVE_TABLES_PER_SCHEMA=12 \
-TRINO_ICEBERG_FEATURE_SCHEMAS=4 \
-TRINO_ICEBERG_TABLES_PER_SCHEMA=8 \
-./scripts/setup.sh
-```
-
-Validation:
-
-```bash
-python3 scripts/validate-metadata.py
-TRINO_VALIDATE_CATALOGS=postgres,hive,iceberg python3 scripts/validate-metadata.py
-```
-
-## Tenant Testing Guidance
-
-Expose only the basic-auth Trino endpoint (`trino-basic`, local port `8081`) when connecting from an Atlan tenant. Do not expose:
-
-- no-auth Trino on `8080`
-- PostgreSQL on `5432`
-- MinIO on `9000` or `9001`
-- Hive Metastore on `9083`
-
-If using a tunnel, configure the tenant connection with the tunnel hostname, port `443`, HTTPS, and Basic authentication. The `cloudflared` compose service expects the tunnel token in `.env` as `CLOUDFLARED_TOKEN` and relies on the Cloudflare dashboard for hostname → `http://trino-basic:8080` routing.
-
-## Security Notes
-
-This repository contains local fixture credentials in config files, such as `trino/trino` and MinIO test credentials. Treat them as local-only defaults. Change the Trino basic-auth username/password before exposing the service.
-
-Basic-auth credentials for `trino-basic` are generated from `TRINO_BASIC_USER` / `TRINO_BASIC_PASSWORD` at setup time; they are not baked into the repo. `password.db` uses bcrypt cost 10 because Trino rejects costs below 8.
-
-The JWT HMAC signing key at `trino/basic-auth/jwt-key` is generated by `setup.sh` (48 random bytes, base64-encoded, no trailing newline). It is intentionally gitignored — anyone holding the key can mint valid tokens for any user.
-
-The generated `trino/basic-auth/password.db`, `trino/basic-auth/jwt-key`, and local `.env` (holding `CLOUDFLARED_TOKEN`) are intentionally ignored and must not be committed.
+**Never commit `replay/identifier-mapping.json`.** It is gitignored. The anonymized DDL files (`views.json`, `source_tables.json`) are safe because the mapping is what would let an attacker correlate names back to the original tenant.
